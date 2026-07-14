@@ -29,7 +29,7 @@ The following optional dependencies are needed for some of the foreground modell
 
 INSTALLATION IN A CONDA ENVIRONMENT
 
-conda create -n fast-env python=3.8 pyccl scikit-learn scikit-image healpy lmfit -c conda-forge -y
+conda create -n fast-env python=3.8 pyccl=2.3.0 scikit-learn scikit-image healpy lmfit -c conda-forge -y
 
 git clone https://github.com/philbull/FastBox.git
 
