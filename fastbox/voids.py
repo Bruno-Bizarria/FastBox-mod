@@ -3,7 +3,7 @@
 import numpy as np
 import scipy.interpolate
 from skimage.segmentation import watershed
-import skimage.future.graph as graph
+import skimage.graph as graph
 import time
 
 
