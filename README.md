@@ -27,6 +27,8 @@ The following optional dependencies are needed for some of the foreground modell
 * `multiprocessing`
 * `GPy`
 
+conda create -n fast-env python=3.8 pyccl scikit-learn scikit-image healpy lmfit -c -c conda-forge -y
+
 ## Current features
 
  - Gaussian and log-normal density fields for any cosmology
