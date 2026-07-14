@@ -30,10 +30,15 @@ The following optional dependencies are needed for some of the foreground modell
 INSTALLATION IN A CONDA ENVIRONMENT
 
 conda create -n fast-env python=3.8 pyccl scikit-learn scikit-image healpy lmfit -c -c conda-forge -y
+
 git clone https://github.com/philbull/FastBox.git
+
 cd Fastbox
+
 python setup.py install
+
 If want to use katbeam model:
+
 pip install git+https://github.com/ska-sa/katbeam.git
 
 
