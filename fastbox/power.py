@@ -606,6 +606,8 @@ class Power(object):
         """
         Calculates the exact 1D two-point correlation function (2PCF) from a 3D cube 
         using the Wiener-Khinchin theorem and Fast Fourier Transforms.
+        For now, just use it for HI signal, since there is no MAS correction
+        for the galaxy mesh yet
         
         Parameters:
         -----------
