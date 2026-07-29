@@ -601,6 +601,76 @@ class Power(object):
             pk_1d = np.trapz(pk_2d, x=mu, axis=1)
             
             return k, pk_1d
+
+    def est_2pcf(self, cube):
+        """
+        Calculates the exact 1D two-point correlation function (2PCF) from a 3D cube 
+        using the Wiener-Khinchin theorem and Fast Fourier Transforms.
+        
+        Parameters:
+        -----------
+        cube : ndarray
+            The 3D data cube (e.g., temperature map or galaxy counts).
+        box : object
+            The simulation box object containing dimensions (Lx, Ly, Lz) and grid size (N).
+            
+        Returns:
+        --------
+        r_c, xi_1d : ndarray
+            The binned radial distances, 2PCF values, and errors on the mean.
+        """
+        # 1. Force the mean to zero to isolate the fluctuations (clustering)
+        # This prevents the massive k=0 mode from destroying the signal.
+        delta_cube = cube - np.mean(cube)
+        
+        # 2. Forward FFT to get the 3D density in Fourier space
+        delta_k = np.fft.fftn(delta_cube)
+        
+        # 3. The 3D Power Spectrum (magnitude squared)
+        pk_3d = np.abs(delta_k)**2
+        
+        # 4. Inverse FFT to get the 3D Correlation Function
+        # We divide by N^3 to enforce the correct normalization so that xi(r=0) = variance
+        xi_3d = np.fft.ifftn(pk_3d).real / (self.box.N**3)
+        
+        # 5. Create the 3D distance grid (handles periodic wrap-around automatically)
+        x = np.fft.fftfreq(self.box.N, d=1.0/self.box.Lx)
+        y = np.fft.fftfreq(self.box.N, d=1.0/self.box.Ly)
+        z = np.fft.fftfreq(self.box.N, d=1.0/self.box.Lz)
+        
+        x3d = x[:, None, None]
+        y3d = y[None, :, None]
+        z3d = z[None, None, :]
+        
+        r_3d = np.sqrt(x3d**2 + y3d**2 + z3d**2)
+        
+        # 6. Optimal Binning based on Grid Resolution
+        # Min radius is dx, Max radius is half the box
+        dx = self.box.Lx / self.box.N
+        dy = self.box.Ly / self.box.N
+        dz = self.box.Lz / self.box.N
+        r_min = min(dx, dy, dz)
+        r_max = min(self.box.Lx, self.box.Ly, self.box.Lz) / 2.0
+        
+        # Bins spaced exactly by r_min
+        bins = np.arange(r_min, r_max + r_min, r_min)
+        r_c = 0.5 * (bins[1:] + bins[:-1])
+        
+        xi_1d = np.zeros(r_c.size)
+        
+        idxs = np.digitize(r_3d.flatten(), bins)
+        xi_flat = xi_3d.flatten()
+        
+        # 7. Spherical Averaging
+        for i in range(1, bins.size):
+            ii = (idxs == i)
+            if np.any(ii):
+                xi_1d[i-1] = np.mean(xi_flat[ii])
+            else:
+                xi_1d[i-1] = np.nan
+                
+        return r_c, xi_1d
+    
             
         else:
             raise ValueError('RSD option must be either True or False')
