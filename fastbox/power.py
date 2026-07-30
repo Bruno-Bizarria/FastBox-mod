@@ -676,4 +676,102 @@ class Power(object):
             
         else:
             raise ValueError('RSD option must be either True or False')
+
+    def bispectrum_equilateral(self, cube, MAS=None, n_bins=8):
+        """
+        Pure numpy implementation of the FFT-based Equilateral Bispectrum estimator.
+        Calculates the 3-point clustering for triangles where k1 = k2 = k3 = k.
+        Uses Scoccimarro estimator (https://arxiv.org/abs/astro-ph/0004086)
         
+        Parameters:
+        -----------
+        cube : ndarray
+            The 3D data cube (e.g., temperature map or galaxy density).
+        box : object
+            The simulation box object containing dimensions (Lx, Ly, Lz) and grid size (N).
+        MAS : str or None
+            Mass assignment scheme to deconvolve ('NGP', 'CIC', None).
+        n_bins : int
+            Number of k-bins. (Fewer/wider bins are better for the bispectrum to 
+            ensure enough closed triangles can form inside the shell).
+            
+        Returns:
+        --------
+        k_c, B_eq, triangles : ndarrays
+            The bin centers, the Equilateral Bispectrum B(k,k,k), and the 
+            number of closed triangles found in each bin.
+        """
+        # 1. Enforce zero mean to isolate the fluctuations
+        delta = cube - np.mean(cube)
+        
+        # 2. Forward FFT
+        delta_k = np.fft.fftn(delta)
+        delta_k[0, 0, 0] = 0.0  # Suppress DC leakage
+        
+        # 3. Create the exact 3D k-grid
+        kx = np.fft.fftfreq(self.box.N, d=self.box.Lx/self.box.N) * 2 * np.pi
+        ky = np.fft.fftfreq(self.box.N, d=self.box.Ly/self.box.N) * 2 * np.pi
+        kz = np.fft.fftfreq(self.box.N, d=self.box.Lz/self.box.N) * 2 * np.pi
+        
+        kx3d, ky3d, kz3d = np.meshgrid(kx, ky, kz, indexing='ij')
+        k_mag = np.sqrt(kx3d**2 + ky3d**2 + kz3d**2)
+        
+        # 4. MAS Window Deconvolution
+        if MAS is not None:
+            assign_dict = {'NGP': 1, 'CIC': 2}
+            p = assign_dict.get(MAS.upper(), 0)
+            
+            if p > 0:
+                W = np.sinc(np.fft.fftfreq(self.box.N))
+                Wx = W[:, None, None]
+                Wy = W[None, :, None]
+                Wz = W[None, None, :]
+                
+                # For the Bispectrum, we deconvolve the field ITSELF (W^p)
+                # rather than the power (W^2p).
+                W_k = (Wx * Wy * Wz)**p
+                W_k[W_k == 0] = np.inf  # Protect against division by zero at nyquist edges
+                delta_k /= W_k
+                
+        # 5. Set up logarithmic or linear k-bins
+        k_f = 2.0 * np.pi / min(self.box.Lx, self.box.Ly, self.box.Lz)
+        k_nyq = np.pi * self.box.N / max(self.box.Lx, self.box.Ly, self.box.Lz)
+        
+        # Bispectrum requires wider bins than P(k) to form closed triangles natively
+        bins = np.linspace(k_f, k_nyq, n_bins + 1)
+        k_c = 0.5 * (bins[1:] + bins[:-1])
+        
+        B_eq = np.zeros(n_bins)
+        triangles = np.zeros(n_bins)
+        V_box = self.box.Lx * self.box.Ly * self.box.Lz
+        
+        # 6. The Scoccimarro FFT Estimator Loop
+        for i in range(n_bins):
+            # Create a boolean filter mask for the current k-shell
+            mask = (k_mag >= bins[i]) & (k_mag < bins[i+1])
+            
+            if not np.any(mask):
+                B_eq[i] = np.nan
+                continue
+                
+            # Filter the complex Fourier field
+            delta_k_shell = delta_k * mask
+            
+            # Inverse FFT the field AND the mask back to real space.
+            # (.real drops the ~1e-16 floating point imaginary residuals)
+            delta_x_shell = np.fft.ifftn(delta_k_shell).real
+            I_x_shell = np.fft.ifftn(mask).real
+            
+            # The magic volume integrals (just array sums in discrete numpy!)
+            num = np.sum(delta_x_shell**3)
+            den = np.sum(I_x_shell**3)
+            
+            if den > 0:
+                # The exact cosmological normalization factor: V^2 / N^9
+                B_eq[i] = (V_box**2 / (self.box.N**9)) * (num / den)
+                # The denominator mathematically counts the number of closed triangles / N^6
+                triangles[i] = den * (self.box.N**6) 
+            else:
+                B_eq[i] = np.nan
+                
+        return k_c, B_eq, triangles
