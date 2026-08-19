@@ -72,7 +72,7 @@ class NoiseModel(object):
         # Generate unit white noise and multiply by noise rms
         noise = np.random.normal(0., 1., self.box.Kx.shape)
         noise *= sigma_rms[np.newaxis,np.newaxis,:]
-        return noise
+        return noise, sigma_rms
         
         
         
