@@ -13,6 +13,22 @@ class Power(object):
         """
         self.box = box
 
+    def _isotropic_k_range(self):
+        """Return fundamental and conservative isotropic Nyquist wavenumbers.
+
+        A spherically averaged spectrum is only alias-safe below the smallest
+        axis-specific Nyquist frequency. This is essential for anisotropic
+        boxes, where using ``Nz / min(L)`` can incorrectly include modes that
+        are unavailable along a transverse direction.
+        """
+        k_fundamental = 2.0 * np.pi / max(self.box.Lx, self.box.Ly, self.box.Lz)
+        k_nyquist = min(
+            np.pi * self.box.Nx / self.box.Lx,
+            np.pi * self.box.Ny / self.box.Ly,
+            np.pi * self.box.Nz / self.box.Lz,
+        )
+        return k_fundamental, k_nyquist
+
     def get_window_correction_grid(self, method=None):
         """
         Calculates the 3D squared window function |W(k)|^2 for mass assignment correction.
@@ -36,15 +52,19 @@ class Power(object):
         p = 1 if method.upper() == 'NGP' else 2
         
         # 1. Get the 1D sinc function along one axis
-        w1d = np.sinc(np.fft.fftfreq(self.box.N))
+        w1d_x = np.sinc(np.fft.fftfreq(self.box.Nx))
+        w1d_y = np.sinc(np.fft.fftfreq(self.box.Ny))
+        w1d_z = np.sinc(np.fft.fftfreq(self.box.Nz))
         
         # 2. Square the 1D window
-        w1d_sq = w1d**2
+        w1d_sq_x = w1d_x**2
+        w1d_sq_y = w1d_y**2
+        w1d_sq_z = w1d_z**2
         
         # 3. Broadcast to 3D axes (X, Y, Z)
-        Wx2 = w1d_sq[:, None, None]
-        Wy2 = w1d_sq[None, :, None]
-        Wz2 = w1d_sq[None, None, :]
+        Wx2 = w1d_sq_x[:, None, None]
+        Wy2 = w1d_sq_y[None, :, None]
+        Wz2 = w1d_sq_z[None, None, :]
         
         # 4. Combine and raise to the assignment scheme power
         W2_k = (Wx2 * Wy2 * Wz2)**p
@@ -62,7 +82,32 @@ class Power(object):
         delta_x2 : ndarray
             Second overdensity mesh. Default None. If not None, returns cross-power
         
-        Returns:
+        Returns: 
+        --------
+        kc     : ndarray
+            Center of k bins
+        vals   : ndarray
+            power spectrum (auto or cross, depending on delta_x2)
+        stddev :
+            simple calculation of standard deviation of the estimator
+        """
+        return self.weighted_power(delta_x1, delta_x2, w1=None, w2=None)
+
+    def weighted_power(self, delta_x1, delta_x2=None, w1=None, w2=None):
+        """
+        Calculates the 1D spherically averaged auto or cross power spectrum, 
+        with optional weighting.
+        
+        Parameters: 
+        -----------
+        delta_x1 : ndarray 
+            overdensity mesh
+        delta_x2 : ndarray
+            Second overdensity mesh. Default None. If not None, returns cross-power
+        w1, w2 : ndarray, optional
+            Weights for each mesh.
+        
+        Returns: 
         --------
         kc     : ndarray
             Center of k bins
@@ -74,8 +119,13 @@ class Power(object):
         if delta_x1 is None:
             raise ValueError('Need to specify field delta_x1')
 
+        # Apply weights
+        d1 = delta_x1.copy()
+        if w1 is not None:
+            d1 *= w1
+        
         # FFT of the first field
-        delta_k1 = fft.fftn(delta_x1)
+        delta_k1 = fft.fftn(d1)
 
         # ---------------------------------------------------------
         # AUTO-CORRELATION
@@ -84,28 +134,38 @@ class Power(object):
             print('Calculating auto-correlation power spectrum...')
             pk = delta_k1 * np.conj(delta_k1)
             pk = pk.real / self.box.boxfactor
+            
+            # Correction for weights (approximate)
+            if w1 is not None:
+                pk /= np.mean(w1**2)
 
         # ---------------------------------------------------------
         # CROSS-CORRELATION
         # ---------------------------------------------------------
         else:
             print('Calculating cross-correlation power spectrum')
-            delta_k2 = fft.fftn(delta_x2)
+            d2 = delta_x2.copy()
+            if w2 is not None:
+                d2 *= w2
+            
+            delta_k2 = fft.fftn(d2)
             
             # Cross power is the real part of (delta_1 * conj(delta_2))
             pk = delta_k1 * np.conj(delta_k2)
             pk = pk.real / self.box.boxfactor
             
+            # Correction for weights (approximate)
+            if w1 is not None or w2 is not None:
+                W1 = w1 if w1 is not None else 1.0
+                W2 = w2 if w2 is not None else 1.0
+                pk /= np.mean(W1 * W2)
+            
 
         # ---------------------------------------------------------
         # K-BINNING
         # ---------------------------------------------------------
-        L_max = max(self.box.Lx, self.box.Ly, self.box.Lz)
-        k_min = 2.0 * np.pi / L_max
-        k_bin = k_min  
-        
-        L_min = min(self.box.Lx, self.box.Ly, self.box.Lz)
-        k_nyq = np.pi * self.box.N / L_min 
+        k_min, k_nyq = self._isotropic_k_range()
+        k_bin = k_min
         
         bins = np.arange(k_min, k_nyq + k_bin, k_bin)
         kc = 0.5 * (bins[1:] + bins[:-1])
@@ -128,7 +188,7 @@ class Power(object):
         
         return kc, vals, stddev
 
-    def model_obs_power_IM(self, km, pkm, bias, Tb, sigdeg, rsd=True, sigma_nl=120):
+    def model_obs_power_IM(self, km, pkm, bias, Tb, sigdeg, rsd=True, sigma_nl=120,fog_model='lorentzian'):
         """
         Computes the theoretical observational power spectrum by forward-modeling 
         the theoretical matter power spectrum on the 3D FFT grid.
@@ -162,11 +222,10 @@ class Power(object):
         scale_factor = 1.0 / (1.0 + z)
         h = self.box.cosmo['h']
         Hz = 100. * h * ccl.h_over_h0(self.box.cosmo, scale_factor)
-        
         # Transverse Beam Scale
         if sigdeg > 0:
             chi_mpc = ccl.comoving_radial_distance(self.box.cosmo, scale_factor)
-            R_beam = np.radians(sigdeg) * (chi_mpc * h)
+            R_beam = np.radians(sigdeg) * (chi_mpc )
         else:
             R_beam = 0.0
         '''    
@@ -179,22 +238,22 @@ class Power(object):
             R_chan = (c_kms * (1.0 + z)**2) / (Hz * nu_21) * dnu_mhz * h
         else:
             R_chan = 0.0
-            
+        '''
         # RSD Linear Growth Rate (f) and FoG Scale (R_nl)
         if rsd:
             f = ccl.growth_rate(self.box.cosmo, scale_factor)
             if sigma_nl > 0:
                 # Convert km/s to comoving Mpc/h
-                R_nl = (sigma_nl * (1.0 + z) / Hz) * h
+                R_nl = (sigma_nl * (1.0 + z) / Hz)
             else:
                 R_nl = 0.0
-        '''
+        
         # =======================================================
         # 2. Create the exact 3D Fourier Grid
         # =======================================================
-        kx = 2.0 * np.pi * np.fft.fftfreq(self.box.N, d=self.box.Lx / self.box.N)
-        ky = 2.0 * np.pi * np.fft.fftfreq(self.box.N, d=self.box.Ly / self.box.N)
-        kz = 2.0 * np.pi * np.fft.fftfreq(self.box.N, d=self.box.Lz / self.box.N)
+        kx = 2.0 * np.pi * np.fft.fftfreq(self.box.Nx, d=self.box.Lx / self.box.Nx)
+        ky = 2.0 * np.pi * np.fft.fftfreq(self.box.Ny, d=self.box.Ly / self.box.Ny)
+        kz = 2.0 * np.pi * np.fft.fftfreq(self.box.Nz, d=self.box.Lz / self.box.Nz)
         
         kx3d = kx[:, None, None]
         ky3d = ky[None, :, None]
@@ -221,9 +280,13 @@ class Power(object):
             # Kaiser Factor
             rsd_factor = (bias + f * mu_sq)**2
             
-            # FoG Damping (Gaussian velocity dispersion)
+            # FoG Damping (velocity dispersion)
             if sigma_nl > 0:
-                D2_fog = np.exp(-k_par_sq * (R_nl**2))
+                if fog_model == 'lorentzian':
+                    D2_fog = 1.0 / (1.0 + k_par_sq * R_nl**2)
+                elif fog_model == 'gaussian':
+                    D2_fog = np.exp(-k_par_sq * R_nl**2)
+
             else:
                 D2_fog = 1.0
                 
@@ -253,12 +316,8 @@ class Power(object):
         # =======================================================
         # 4. Bin the 3D Model into 1D k-shells
         # =======================================================
-        L_max = max(self.box.Lx, self.box.Ly, self.box.Lz)
-        k_min = 2.0 * np.pi / L_max
-        k_bin = k_min  
-        
-        L_min = min(self.box.Lx, self.box.Ly, self.box.Lz)
-        k_nyq = np.pi * self.box.N / L_min 
+        k_min, k_nyq = self._isotropic_k_range()
+        k_bin = k_min
         
         bins = np.arange(k_min, k_nyq + k_bin, k_bin)
         kc = 0.5 * (bins[1:] + bins[:-1])
@@ -309,9 +368,9 @@ class Power(object):
         # =======================================================
         # 1. Create the exact 3D Fourier Grid
         # =======================================================
-        kx = 2.0 * np.pi * np.fft.fftfreq(self.box.N, d=self.box.Lx / self.box.N)
-        ky = 2.0 * np.pi * np.fft.fftfreq(self.box.N, d=self.box.Ly / self.box.N)
-        kz = 2.0 * np.pi * np.fft.fftfreq(self.box.N, d=self.box.Lz / self.box.N)
+        kx = 2.0 * np.pi * np.fft.fftfreq(self.box.Nx, d=self.box.Lx / self.box.Nx)
+        ky = 2.0 * np.pi * np.fft.fftfreq(self.box.Ny, d=self.box.Ly / self.box.Ny)
+        kz = 2.0 * np.pi * np.fft.fftfreq(self.box.Nz, d=self.box.Lz / self.box.Nz)
         
         kx3d = kx[:, None, None]
         ky3d = ky[None, :, None]
@@ -366,12 +425,8 @@ class Power(object):
         # =======================================================
         # 4. Bin the 3D Model into 1D k-shells
         # =======================================================
-        L_max = max(self.box.Lx, self.box.Ly, self.box.Lz)
-        k_min = 2.0 * np.pi / L_max
-        k_bin = k_min  
-        
-        L_min = min(self.box.Lx, self.box.Ly, self.box.Lz)
-        k_nyq = np.pi * self.box.N / L_min 
+        k_min, k_nyq = self._isotropic_k_range()
+        k_bin = k_min
         
         bins = np.arange(k_min, k_nyq + k_bin, k_bin)
         kc = 0.5 * (bins[1:] + bins[:-1])
@@ -394,7 +449,7 @@ class Power(object):
         
         return kc, vals, stddev
 
-    def model_obs_power_CC(self, km, pkm, bias_HI, bias_gal, Tb, sigdeg, MAS='NGP', rsd=True, sigma_nl=120):
+    def model_obs_power_CC(self, km, pkm, bias_HI, bias_gal, Tb, sigdeg, MAS='NGP', rsd=True, sigma_nl=120, fog_model='lorentzian'):
         """
         Computes the theoretical Cross-Correlation power spectrum by forward-modeling 
         the matter power spectrum on the 3D FFT grid.
@@ -417,6 +472,10 @@ class Power(object):
             Set True to apply Kaiser and FoG effects.
         sigma_nl : float
             Velocity dispersion in km/s for Finger of God damping.
+        fog_model : {'lorentzian', 'gaussian', 'none'}
+            Power-level Fingers-of-God damping convention. ``lorentzian`` is
+            ``[1 + (k_parallel sigma_v/(a H))^2]^-1`` and matches
+            :meth:`CosmoBox.linear_rsd_density`.
         """
         import pyccl as ccl
         import numpy as np
@@ -429,27 +488,29 @@ class Power(object):
         h = self.box.cosmo['h']
         Hz = 100. * h * ccl.h_over_h0(self.box.cosmo, scale_factor)
         
-        # Transverse Beam Scale
+        # Transverse beam scale in Mpc. The FastBox FFT grid and CCL
+        # comoving distances are both expressed in Mpc, so no h conversion is
+        # applied here.
         if sigdeg > 0:
             chi_mpc = ccl.comoving_radial_distance(self.box.cosmo, scale_factor)
-            R_beam = np.radians(sigdeg) * (chi_mpc * h)
+            R_beam = np.radians(sigdeg) * chi_mpc
         else:
             R_beam = 0.0
 
-        # Calculate RSD parameters
+        # Calculate RSD parameters. This must match CosmoBox.linear_rsd_density.
         if rsd:
             f = ccl.growth_rate(self.box.cosmo, scale_factor)
-            if sigma_nl > 0:
-                R_nl = (sigma_nl * (1.0 + z) / Hz) * h
-            else:
-                R_nl = 0.0
+            R_nl = sigma_nl / (scale_factor * Hz) if sigma_nl > 0 else 0.0
+            fog_model = fog_model.lower()
+            if fog_model not in {'lorentzian', 'gaussian', 'none'}:
+                raise ValueError("fog_model must be 'lorentzian', 'gaussian', or 'none'")
 
         # =======================================================
         # 2. Create the exact 3D Fourier Grid
         # =======================================================
-        kx = 2.0 * np.pi * np.fft.fftfreq(self.box.N, d=self.box.Lx / self.box.N)
-        ky = 2.0 * np.pi * np.fft.fftfreq(self.box.N, d=self.box.Ly / self.box.N)
-        kz = 2.0 * np.pi * np.fft.fftfreq(self.box.N, d=self.box.Lz / self.box.N)
+        kx = 2.0 * np.pi * np.fft.fftfreq(self.box.Nx, d=self.box.Lx / self.box.Nx)
+        ky = 2.0 * np.pi * np.fft.fftfreq(self.box.Ny, d=self.box.Ly / self.box.Ny)
+        kz = 2.0 * np.pi * np.fft.fftfreq(self.box.Nz, d=self.box.Lz / self.box.Nz)
         
         kx3d = kx[:, None, None]
         ky3d = ky[None, :, None]
@@ -472,7 +533,12 @@ class Power(object):
             # Cross-Correlation Kaiser Factor: (b_HI + f*mu^2) * (b_gal + f*mu^2)
             rsd_factor = (bias_HI + f * mu_sq) * (bias_gal + f * mu_sq)
             
-            D2_fog = np.exp(-k_par_sq * (R_nl**2)) if sigma_nl > 0 else 1.0
+            if fog_model == 'lorentzian' and sigma_nl > 0:
+                D2_fog = 1.0 / (1.0 + k_par_sq * R_nl**2)
+            elif fog_model == 'gaussian' and sigma_nl > 0:
+                D2_fog = np.exp(-k_par_sq * R_nl**2)
+            else:
+                D2_fog = 1.0
                 
             pk_3d = pk_3d * rsd_factor * D2_fog
         else:
@@ -497,12 +563,8 @@ class Power(object):
         # =======================================================
         # 4. Bin the 3D Model into 1D k-shells
         # =======================================================
-        L_max = max(self.box.Lx, self.box.Ly, self.box.Lz)
-        k_min = 2.0 * np.pi / L_max
-        k_bin = k_min  
-        
-        L_min = min(self.box.Lx, self.box.Ly, self.box.Lz)
-        k_nyq = np.pi * self.box.N / L_min 
+        k_min, k_nyq = self._isotropic_k_range()
+        k_bin = k_min
         
         bins = np.arange(k_min, k_nyq + k_bin, k_bin)
         kc = 0.5 * (bins[1:] + bins[:-1])
@@ -672,10 +734,7 @@ class Power(object):
                 xi_1d[i-1] = np.nan
                 
         return r_c, xi_1d
-    
-            
-        else:
-            raise ValueError('RSD option must be either True or False')
+
 
     def bispectrum_equilateral(self, cube, MAS=None, n_bins=8):
         """
@@ -734,8 +793,7 @@ class Power(object):
                 delta_k /= W_k
                 
         # 5. Set up logarithmic or linear k-bins
-        k_f = 2.0 * np.pi / min(self.box.Lx, self.box.Ly, self.box.Lz)
-        k_nyq = np.pi * self.box.N / max(self.box.Lx, self.box.Ly, self.box.Lz)
+        k_f, k_nyq = self._isotropic_k_range()
         
         # Bispectrum requires wider bins than P(k) to form closed triangles natively
         bins = np.linspace(k_f, k_nyq, n_bins + 1)
