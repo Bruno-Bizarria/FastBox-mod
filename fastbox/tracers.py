@@ -188,7 +188,7 @@ class GalaxyTracer:
         Generates a discrete galaxy catalogue via Poisson sampling.
         """
         voxel_vol = (self.box.Lx * self.box.Ly * self.box.Lz) / \
-                    (self.box.N * self.box.N * self.box.N)
+                    (self.box.Nx * self.box.Ny * self.box.Nz)
         
         expected_gals = self.vol_density * voxel_vol * (1.0 +  density_field)
         expected_gals[expected_gals < 0] = 0.0 
@@ -198,9 +198,9 @@ class GalaxyTracer:
         voxel_indices = np.where(N_gals_per_voxel > 0)
         counts = N_gals_per_voxel[voxel_indices]
         
-        dx = self.box.Lx / self.box.N
-        dy = self.box.Ly / self.box.N
-        dz = self.box.Lz / self.box.N
+        dx = self.box.Lx / self.box.Nx
+        dy = self.box.Ly / self.box.Ny
+        dz = self.box.Lz / self.box.Nz
         
         x_base = voxel_indices[0] * dx
         y_base = voxel_indices[1] * dy
@@ -235,9 +235,9 @@ class GalaxyTracer:
 
     def _assign_ngp(self, positions, overdensity=False):
         """Internal method for Nearest Grid Point mass assignment."""
-        edges_x = np.linspace(0, self.box.Lx, self.box.N + 1)
-        edges_y = np.linspace(0, self.box.Ly, self.box.N + 1)
-        edges_z = np.linspace(0, self.box.Lz, self.box.N + 1)
+        edges_x = np.linspace(0, self.box.Lx, self.box.Nx + 1)
+        edges_y = np.linspace(0, self.box.Ly, self.box.Ny + 1)
+        edges_z = np.linspace(0, self.box.Lz, self.box.Nz + 1)
         
         pos = np.asarray(positions)
         x = pos[:, 0] % self.box.Lx
@@ -255,23 +255,23 @@ class GalaxyTracer:
     def _assign_cic(self, positions, overdensity=False):
         """Internal method for Cloud-in-Cell mass assignment."""
         pos = np.asarray(positions)
-        N_total_cells = self.box.N * self.box.N * self.box.N
+        N_total_cells = self.box.Nx * self.box.Ny * self.box.Nz
         
-        dx = self.box.Lx / self.box.N
-        dy = self.box.Ly / self.box.N
-        dz = self.box.Lz / self.box.N
+        dx = self.box.Lx / self.box.Nx
+        dy = self.box.Ly / self.box.Ny
+        dz = self.box.Lz / self.box.Nz
     
-        u = (pos[:, 0] / dx - 0.5) % self.box.N
-        v = (pos[:, 1] / dy - 0.5) % self.box.N
-        w = (pos[:, 2] / dz - 0.5) % self.box.N
+        u = (pos[:, 0] / dx - 0.5) % self.box.Nx
+        v = (pos[:, 1] / dy - 0.5) % self.box.Ny
+        w = (pos[:, 2] / dz - 0.5) % self.box.Nz
     
         i0 = np.floor(u).astype(int)
         j0 = np.floor(v).astype(int)
         k0 = np.floor(w).astype(int)
     
-        i1 = (i0 + 1) % self.box.N
-        j1 = (j0 + 1) % self.box.N
-        k1 = (k0 + 1) % self.box.N
+        i1 = (i0 + 1) % self.box.Nx
+        j1 = (j0 + 1) % self.box.Ny
+        k1 = (k0 + 1) % self.box.Nz
     
         dwx = u - i0
         dwy = v - j0
@@ -291,7 +291,7 @@ class GalaxyTracer:
         w111 = dwx * dwy * dwz
     
         def flat_idx(i, j, k):
-            return i * (self.box.N * self.box.N) + j * self.box.N + k
+            return i * (self.box.Ny * self.box.Nz) + j * self.box.Nz + k
     
         grid_flat = (
             np.bincount(flat_idx(i0, j0, k0), weights=w000, minlength=N_total_cells) +
@@ -304,7 +304,7 @@ class GalaxyTracer:
             np.bincount(flat_idx(i1, j1, k1), weights=w111, minlength=N_total_cells)
         )
     
-        grid = grid_flat.reshape((self.box.N, self.box.N, self.box.N))
+        grid = grid_flat.reshape((self.box.Nx, self.box.Ny, self.box.Nz))
         if overdensity==True:
             mean_counts = np.mean(grid)
             grid = (grid / mean_counts) - 1.0
@@ -345,9 +345,9 @@ class GalaxyTracer:
             vel_z = fft.ifftn(vel_k[2]).real
             
             # Map galaxies to their nearest grid cells to extract local velocity
-            dx = self.box.Lx / self.box.N
-            dy = self.box.Ly / self.box.N
-            dz = self.box.Lz / self.box.N
+            dx = self.box.Lx / self.box.Nx
+            dy = self.box.Ly / self.box.Ny
+            dz = self.box.Lz / self.box.Nz
             
             i = np.floor((positions[:, 0] % self.box.Lx) / dx).astype(int)
             j = np.floor((positions[:, 1] % self.box.Ly) / dy).astype(int)
